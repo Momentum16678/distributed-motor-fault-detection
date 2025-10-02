@@ -1,0 +1,274 @@
+%% Day 5 - Step 1: Adaptive Thresholding Framework
+% Author: Ighedosa Osalumenese Favour
+% Supervisor: Engr. N. Shokoya
+% Objective: Implement adaptive thresholding for motor fault detection
+
+clear all; close all; clc;
+
+fprintf('====================================\n');
+fprintf('   DAY 5: ADAPTIVE THRESHOLDING    \n');
+fprintf('   Step 1: Framework Implementation \n');
+fprintf('====================================\n\n');
+
+%% Create Adaptive Threshold Function
+% Create the adaptive threshold function file directly
+if ~exist('adaptive_threshold_update.m', 'file')
+    fid = fopen('adaptive_threshold_update.m', 'w');
+    fprintf(fid, 'function [threshold, mu_new, sigma_new] = adaptive_threshold_update(feature_value, mu_old, sigma_old, alpha, k)\n');
+    fprintf(fid, '%%%% ADAPTIVE_THRESHOLD_UPDATE - Update adaptive threshold parameters\n');
+    fprintf(fid, '%%%% Update statistics using exponential moving average\n');
+    fprintf(fid, 'mu_new = (1 - alpha) * mu_old + alpha * feature_value;\n');
+    fprintf(fid, 'sigma_new = (1 - alpha) * sigma_old + alpha * abs(feature_value - mu_new);\n');
+    fprintf(fid, 'threshold = mu_new + k * sigma_new;\n');
+    fprintf(fid, 'end\n');
+    fclose(fid);
+    fprintf('✓ Created adaptive_threshold_update.m function\n');
+end
+
+%% Test with Synthetic Signal
+% Create a test signal with varying baseline and faults
+Fs = 100000;  % Sampling frequency
+t = 0:1/Fs:10;  % 10 seconds
+
+% Varying baseline (simulating load changes)
+baseline = 7 + 0.5*sin(2*pi*0.1*t);  % Slowly varying load
+
+% Add noise
+noise = 0.1*randn(size(t));
+
+% Add fault signatures at specific times
+fault1 = zeros(size(t));
+fault1(t >= 3 & t <= 4) = 0.5*sin(2*pi*10*t(t >= 3 & t <= 4));  % 10 Hz fault
+
+fault2 = zeros(size(t));
+fault2(t >= 6 & t <= 7) = 1.0*sin(2*pi*100*t(t >= 6 & t <= 7));  % 100 Hz fault
+
+% Combined signal
+signal = baseline + noise + fault1 + fault2;
+
+fprintf('Signal created: length = %d samples\n', length(signal));
+
+%% Apply Wavelet Analysis with Error Handling
+wavelet_name = 'db4';
+decomp_level = 8;
+
+% Calculate wavelet energy in sliding windows
+window_size = round(0.1 * Fs);  % 100ms windows
+step_size = round(window_size / 10);  % 90% overlap
+
+fprintf('Window size: %d samples\n', window_size);
+fprintf('Step size: %d samples\n', step_size);
+
+% Pre-allocate arrays
+num_windows = floor((length(signal) - window_size) / step_size) + 1;
+wavelet_energy = zeros(1, num_windows);
+time_energy = zeros(1, num_windows);
+
+fprintf('Expected number of windows: %d\n', num_windows);
+
+% Process windows
+fprintf('\n--- CALCULATING WAVELET ENERGY ---\n');
+window_count = 0;
+
+for i = 1:step_size:(length(signal)-window_size)
+    window_count = window_count + 1;
+    
+    if window_count > num_windows
+        fprintf('Warning: Exceeded expected windows at i=%d\n', i);
+        break;
+    end
+    
+    window_signal = signal(i:i+window_size-1);
+    
+    try
+        [C_win, L_win] = wavedec(window_signal, 4, wavelet_name);  % Reduced levels for speed
+        
+        % Calculate total detail energy
+        total_energy = 0;
+        for level = 1:4
+            D = detcoef(C_win, L_win, level);
+            total_energy = total_energy + sum(D.^2);
+        end
+        
+        wavelet_energy(window_count) = sqrt(total_energy);
+        time_energy(window_count) = t(i + floor(window_size/2));
+    catch ME
+        fprintf('Error at window %d: %s\n', window_count, ME.message);
+        wavelet_energy(window_count) = 0;
+        time_energy(window_count) = t(i + floor(window_size/2));
+    end
+end
+
+% Trim arrays to actual size
+wavelet_energy = wavelet_energy(1:window_count);
+time_energy = time_energy(1:window_count);
+
+fprintf('Processed %d windows successfully\n', window_count);
+
+%% Implement Adaptive Thresholding
+fprintf('\n--- ADAPTIVE THRESHOLD CALCULATION ---\n');
+
+% Parameters
+alpha = 0.05;  % Learning rate (0.05 = 5% adaptation per sample)
+k = 3;         % Threshold multiplier (3 sigma rule)
+
+% Initialize
+mu = wavelet_energy(1);
+sigma = std(wavelet_energy(1:min(10, length(wavelet_energy))));  % Use first 10 samples
+if sigma == 0
+    sigma = 0.1;  % Prevent zero sigma
+end
+
+threshold_adaptive = zeros(size(wavelet_energy));
+mu_history = zeros(size(wavelet_energy));
+sigma_history = zeros(size(wavelet_energy));
+
+% Adaptive threshold calculation
+for i = 1:length(wavelet_energy)
+    % Update statistics
+    mu = (1 - alpha) * mu + alpha * wavelet_energy(i);
+    sigma = (1 - alpha) * sigma + alpha * abs(wavelet_energy(i) - mu);
+    
+    % Calculate threshold
+    threshold_adaptive(i) = mu + k * sigma;
+    
+    % Store history
+    mu_history(i) = mu;
+    sigma_history(i) = sigma;
+end
+
+% Fixed threshold (based on initial statistics)
+num_initial = min(1000, floor(length(wavelet_energy)/10));  % Use 10% or 1000, whichever is smaller
+fixed_threshold = mean(wavelet_energy(1:num_initial)) + k * std(wavelet_energy(1:num_initial));
+
+%% Fault Detection
+% Adaptive threshold detection
+alarms_adaptive = wavelet_energy > threshold_adaptive;
+
+% Fixed threshold detection
+alarms_fixed = wavelet_energy > fixed_threshold;
+
+% Count false alarms (alarms during no-fault periods)
+no_fault_idx = (time_energy < 3) | (time_energy > 4 & time_energy < 6) | (time_energy > 7);
+false_alarms_adaptive = sum(alarms_adaptive & no_fault_idx);
+false_alarms_fixed = sum(alarms_fixed & no_fault_idx);
+
+% Count missed detections (no alarm during fault periods)
+fault_idx = (time_energy >= 3 & time_energy <= 4) | (time_energy >= 6 & time_energy <= 7);
+missed_adaptive = sum(~alarms_adaptive & fault_idx);
+missed_fixed = sum(~alarms_fixed & fault_idx);
+
+fprintf('\nDETECTION PERFORMANCE:\n');
+fprintf('Fixed Threshold:\n');
+fprintf('  False alarms: %d\n', false_alarms_fixed);
+fprintf('  Missed detections: %d\n', missed_fixed);
+fprintf('\nAdaptive Threshold:\n');
+fprintf('  False alarms: %d\n', false_alarms_adaptive);
+fprintf('  Missed detections: %d\n', missed_adaptive);
+
+%% Visualization
+figure('Position', [100, 100, 1400, 900], 'Name', 'Adaptive Thresholding Framework');
+
+% Plot 1: Original signal
+subplot(3,2,1);
+plot(t, signal, 'b', 'LineWidth', 0.5);
+hold on;
+plot(t, baseline, 'k--', 'LineWidth', 1.5);
+title('Original Signal with Varying Baseline');
+xlabel('Time (s)');
+ylabel('Amplitude');
+legend('Signal', 'Baseline');
+grid on;
+% Mark fault regions
+patch([3 4 4 3], [min(signal) min(signal) max(signal) max(signal)], 'r', 'FaceAlpha', 0.2);
+patch([6 7 7 6], [min(signal) min(signal) max(signal) max(signal)], 'r', 'FaceAlpha', 0.2);
+text(3.5, max(signal)*0.9, '10 Hz Fault', 'HorizontalAlignment', 'center');
+text(6.5, max(signal)*0.9, '100 Hz Fault', 'HorizontalAlignment', 'center');
+
+% Plot 2: Wavelet energy
+subplot(3,2,2);
+plot(time_energy, wavelet_energy, 'b', 'LineWidth', 1);
+title('Wavelet Energy Features');
+xlabel('Time (s)');
+ylabel('Energy');
+grid on;
+
+% Plot 3: Adaptive vs Fixed thresholds
+subplot(3,2,3);
+plot(time_energy, wavelet_energy, 'b', 'LineWidth', 1);
+hold on;
+plot(time_energy, threshold_adaptive, 'g', 'LineWidth', 2);
+plot(time_energy, ones(size(time_energy))*fixed_threshold, 'r--', 'LineWidth', 2);
+title('Adaptive vs Fixed Thresholding');
+xlabel('Time (s)');
+ylabel('Energy');
+legend('Energy', 'Adaptive Threshold', 'Fixed Threshold');
+grid on;
+
+% Plot 4: Detection results
+subplot(3,2,4);
+plot(time_energy, double(alarms_adaptive), 'g', 'LineWidth', 2);
+hold on;
+plot(time_energy, double(alarms_fixed)*1.1, 'r--', 'LineWidth', 2);
+title('Alarm Signals');
+xlabel('Time (s)');
+ylabel('Alarm State');
+legend('Adaptive', 'Fixed');
+ylim([-0.2 1.4]);
+grid on;
+
+% Plot 5: Threshold adaptation
+subplot(3,2,5);
+yyaxis left;
+plot(time_energy, mu_history, 'b', 'LineWidth', 1.5);
+ylabel('Mean (μ)');
+yyaxis right;
+plot(time_energy, sigma_history, 'r', 'LineWidth', 1.5);
+ylabel('Std Dev (σ)');
+title('Adaptive Parameters Evolution');
+xlabel('Time (s)');
+grid on;
+
+% Plot 6: Performance summary
+subplot(3,2,6);
+categories = categorical({'False Alarms', 'Missed Detections'});
+performance_data = [false_alarms_fixed, false_alarms_adaptive; 
+                   missed_fixed, missed_adaptive];
+bar(categories, performance_data);
+ylabel('Count');
+title('Detection Performance Comparison');
+legend('Fixed Threshold', 'Adaptive Threshold');
+grid on;
+
+% Add main title
+try
+    sgtitle('Adaptive Thresholding: Reduced False Alarms with Dynamic Adjustment', ...
+        'FontSize', 16, 'FontWeight', 'bold');
+catch
+    annotation('textbox', [0.25 0.96 0.5 0.04], ...
+        'String', 'Adaptive Thresholding Framework', ...
+        'FontSize', 16, 'FontWeight', 'bold', ...
+        'HorizontalAlignment', 'center', 'EdgeColor', 'none');
+end
+
+%% Save Framework Results
+adaptive_framework = struct();
+adaptive_framework.alpha = alpha;
+adaptive_framework.k = k;
+adaptive_framework.false_alarms_fixed = false_alarms_fixed;
+adaptive_framework.false_alarms_adaptive = false_alarms_adaptive;
+
+if false_alarms_fixed > 0
+    adaptive_framework.improvement = (false_alarms_fixed - false_alarms_adaptive) / false_alarms_fixed * 100;
+else
+    adaptive_framework.improvement = 0;
+end
+
+% Create Data folder if it doesn't exist
+if ~exist('Data', 'dir')
+    mkdir('Data');
+end
+
+save('Data/adaptive_framework.mat', 'adaptive_framework');
+fprintf('\n✓ Adaptive thresholding framework implemented!\n');
+fprintf('False alarm reduction: %.1f%%\n', adaptive_framework.improvement);

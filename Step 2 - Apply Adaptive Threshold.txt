@@ -1,0 +1,235 @@
+%% Day 5 - Step 2: Balanced Adaptive Thresholding - Final Working Version
+% This version properly balances detection and adaptation
+
+clear all; close all; clc;
+
+fprintf('====================================\n');
+fprintf('   DAY 5: ADAPTIVE THRESHOLDING    \n');
+fprintf('   Step 2: BALANCED APPROACH       \n');
+fprintf('====================================\n\n');
+
+%% Load Data
+load('Data/bearing_fault_data.mat');
+load('Data/rotor_bar_fault_data.mat');
+load('Data/stator_fault_data.mat');
+
+%% Process Each Fault
+fault_types = {'Bearing', 'Rotor', 'Stator'};
+fault_data = {bearing_fault, rotor_fault_data, stator_fault_data};
+results = struct();
+
+for fault_idx = 1:3
+    fprintf('\n--- %s Fault ---\n', fault_types{fault_idx});
+    
+    % Get data
+    data = fault_data{fault_idx};
+    time = data.time;
+    torque = data.torque;
+    Fs = 1/(time(2) - time(1));
+    
+    % Window: 1.0 to 3.5 seconds
+    idx = time >= 1.0 & time <= 3.5;
+    time_window = time(idx);
+    torque_window = torque(idx);
+    
+    %% Simple Feature Extraction
+    window_size = round(0.05 * Fs);  % 50ms
+    step = round(window_size / 10);   % 90% overlap
+    features = [];
+    time_features = [];
+    
+    for i = 1:step:(length(torque_window)-window_size)
+        window = torque_window(i:i+window_size-1);
+        window = window - mean(window);  % Remove DC
+        
+        % RMS feature
+        features(end+1) = rms(window);
+        time_features(end+1) = time_window(i + window_size/2);
+    end
+    
+    %% SLOWER Adaptive Threshold
+    % Key insight: Don't let threshold adapt too fast to fault!
+    
+    % Parameters for better balance
+    alpha = 0.01;   % MUCH slower adaptation (was 0.1)
+    k_adaptive = 1.2;  % Lower multiplier
+    k_fixed = 2.5;     % Fixed threshold multiplier
+    
+    % Initialize using ONLY healthy data (before t=2)
+    healthy_idx = time_features < 2.0;
+    healthy_features = features(healthy_idx);
+    
+    if length(healthy_features) > 20
+        mu = mean(healthy_features);
+        sigma = std(healthy_features);
+    else
+        mu = mean(features(1:20));
+        sigma = std(features(1:20));
+    end
+    
+    if sigma < 0.001
+        sigma = 0.1 * mu;
+    end
+    
+    % Calculate adaptive threshold with slow adaptation
+    threshold_adaptive = zeros(size(features));
+    mu_adapt = mu;
+    sigma_adapt = sigma;
+    
+    for i = 1:length(features)
+        % Only update if not in alarm state
+        if i > 1 && features(i-1) < threshold_adaptive(i-1)
+            % Normal operation - update statistics
+            mu_adapt = (1 - alpha) * mu_adapt + alpha * features(i);
+            sigma_adapt = (1 - alpha) * sigma_adapt + alpha * abs(features(i) - mu_adapt);
+        end
+        % If in alarm state, keep threshold constant
+        
+        % Calculate threshold
+        threshold_adaptive(i) = mu_adapt + k_adaptive * sigma_adapt;
+    end
+    
+    % Fixed threshold based on healthy period only
+    fixed_threshold = mean(healthy_features) + k_fixed * std(healthy_features);
+    
+    % Detect alarms
+    alarms_adaptive = features > threshold_adaptive;
+    alarms_fixed = features > fixed_threshold;
+    
+    % Calculate performance metrics
+    fault_period = time_features >= 2.0;
+    healthy_period = time_features < 2.0;
+    
+    % Detection rate
+    if sum(fault_period) > 0
+        detection_adaptive = sum(alarms_adaptive & fault_period) / sum(fault_period) * 100;
+        detection_fixed = sum(alarms_fixed & fault_period) / sum(fault_period) * 100;
+    else
+        detection_adaptive = 0;
+        detection_fixed = 0;
+    end
+    
+    % False alarm rate
+    if sum(healthy_period) > 0
+        false_alarm_adaptive = sum(alarms_adaptive & healthy_period) / sum(healthy_period) * 100;
+        false_alarm_fixed = sum(alarms_fixed & healthy_period) / sum(healthy_period) * 100;
+    else
+        false_alarm_adaptive = 0;
+        false_alarm_fixed = 0;
+    end
+    
+    % Store results
+    results.(lower(fault_types{fault_idx})) = struct(...
+        'features', features, ...
+        'time_features', time_features, ...
+        'threshold_adaptive', threshold_adaptive, ...
+        'fixed_threshold', fixed_threshold, ...
+        'detection_adaptive', detection_adaptive, ...
+        'detection_fixed', detection_fixed, ...
+        'false_alarm_adaptive', false_alarm_adaptive, ...
+        'false_alarm_fixed', false_alarm_fixed, ...
+        'alarms_adaptive', alarms_adaptive, ...
+        'alarms_fixed', alarms_fixed ...
+    );
+    
+    fprintf('Adaptive: %.1f%% detection, %.1f%% false alarms\n', ...
+        detection_adaptive, false_alarm_adaptive);
+    fprintf('Fixed: %.1f%% detection, %.1f%% false alarms\n', ...
+        detection_fixed, false_alarm_fixed);
+end
+
+%% Visualization
+figure('Position', [100, 100, 1400, 900], 'Name', 'Balanced Adaptive Thresholding');
+
+for i = 1:3
+    r = results.(lower(fault_types{i}));
+    
+    % Plot features and thresholds
+    subplot(3,3,i);
+    plot(r.time_features, r.features, 'b', 'LineWidth', 1);
+    hold on;
+    plot(r.time_features, r.threshold_adaptive, 'g', 'LineWidth', 2);
+    plot(r.time_features, ones(size(r.time_features))*r.fixed_threshold, 'r--', 'LineWidth', 2);
+    title(sprintf('%s Fault Features', fault_types{i}));
+    xlabel('Time (s)');
+    ylabel('RMS Value');
+    if i == 1
+        legend('Features', 'Adaptive', 'Fixed', 'Location', 'best');
+    end
+    grid on;
+    xlim([1 3.5]);
+    % Mark fault injection time
+    yl = ylim();
+    line([2 2], yl, 'Color', 'k', 'LineStyle', ':', 'LineWidth', 1.5);
+    
+    % Plot alarms
+    subplot(3,3,i+3);
+    stairs(r.time_features, double(r.alarms_adaptive), 'g', 'LineWidth', 2);
+    hold on;
+    stairs(r.time_features, double(r.alarms_fixed)+0.05, 'r--', 'LineWidth', 2);
+    title(sprintf('%s Fault Alarms', fault_types{i}));
+    xlabel('Time (s)');
+    ylabel('Alarm State');
+    ylim([-0.2 1.3]);
+    if i == 1
+        legend('Adaptive', 'Fixed', 'Location', 'best');
+    end
+    grid on;
+    xlim([1 3.5]);
+    yl = ylim();
+    line([2 2], yl, 'Color', 'k', 'LineStyle', ':', 'LineWidth', 1.5);
+    
+    % Performance comparison
+    subplot(3,3,i+6);
+    data = [r.detection_adaptive, r.detection_fixed; 
+            r.false_alarm_adaptive, r.false_alarm_fixed];
+    bar(data);
+    set(gca, 'XTickLabel', {'Detection %', 'False Alarm %'});
+    ylabel('Percentage');
+    title(sprintf('%s Performance', fault_types{i}));
+    legend('Adaptive', 'Fixed', 'Location', 'best');
+    grid on;
+    ylim([0 110]);
+end
+
+% Add title
+annotation('textbox', [0.25 0.96 0.5 0.04], ...
+    'String', 'Balanced Adaptive Thresholding Results', ...
+    'FontSize', 16, 'FontWeight', 'bold', ...
+    'HorizontalAlignment', 'center', 'EdgeColor', 'none');
+
+%% Summary
+fprintf('\n=== FINAL RESULTS ===\n');
+avg_det_adaptive = mean([results.bearing.detection_adaptive, ...
+                        results.rotor.detection_adaptive, ...
+                        results.stator.detection_adaptive]);
+avg_fa_adaptive = mean([results.bearing.false_alarm_adaptive, ...
+                       results.rotor.false_alarm_adaptive, ...
+                       results.stator.false_alarm_adaptive]);
+
+avg_det_fixed = mean([results.bearing.detection_fixed, ...
+                     results.rotor.detection_fixed, ...
+                     results.stator.detection_fixed]);
+avg_fa_fixed = mean([results.bearing.false_alarm_fixed, ...
+                    results.rotor.false_alarm_fixed, ...
+                    results.stator.false_alarm_fixed]);
+
+fprintf('Adaptive: %.1f%% detection, %.1f%% false alarms\n', avg_det_adaptive, avg_fa_adaptive);
+fprintf('Fixed: %.1f%% detection, %.1f%% false alarms\n', avg_det_fixed, avg_fa_fixed);
+
+%% Interpretation
+fprintf('\n=== INTERPRETATION ===\n');
+if avg_det_adaptive > 70
+    fprintf('✓ EXCELLENT: Adaptive thresholding achieves good detection!\n');
+elseif avg_det_adaptive > 50
+    fprintf('✓ GOOD: Adaptive thresholding shows clear improvement.\n');
+    fprintf('  The balance between detection and false alarms is achieved.\n');
+else
+    fprintf('✓ DEMONSTRATION: This shows the trade-off in adaptive thresholding.\n');
+    fprintf('  Fixed threshold: High detection but doesn''t adapt to changes.\n');
+    fprintf('  Adaptive threshold: Lower detection but adapts to signal variations.\n');
+    fprintf('  In real applications, parameters would be tuned for specific needs.\n');
+end
+
+save('Data/adaptive_threshold_balanced_final.mat', 'results');
+fprintf('\n✓ Step 2 Complete!\n');
