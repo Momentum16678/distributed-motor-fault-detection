@@ -1,0 +1,26 @@
+function Tm = rotorBarFault(t, Tm_healthy)
+    % Rotor Bar Fault parameters
+    fault_start = 2;        % Fault starts at 2 seconds
+    slip = 0.03;            % 3% slip (typical for loaded motor)
+    f_supply = 50;          % Supply frequency (Hz)
+    severity = 0.2;         % 20% severity
+    
+    % Normal operation before fault
+    if t < fault_start
+        Tm = Tm_healthy;
+        return;
+    end
+    
+    % Calculate sideband frequencies
+    f_sideband = 2 * slip * f_supply;  % 2sf = 2*0.03*50 = 3 Hz
+    
+    % Time since fault
+    t_fault = t - fault_start;
+    
+    % Create rotor bar fault signature
+    % This creates a beat frequency effect (amplitude modulation)
+    modulation = 1 + severity * sin(2*pi*f_sideband*t_fault);
+    
+    % Apply modulation to torque
+    Tm = Tm_healthy * modulation;
+end

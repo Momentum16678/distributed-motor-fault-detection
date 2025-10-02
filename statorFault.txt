@@ -1,0 +1,36 @@
+function Tm = statorFault(t, Tm_healthy)
+    % Stator fault parameters
+    fault_start = 2;        % Fault starts at 2 seconds
+    f_supply = 50;          % 50 Hz supply frequency
+    severity = 0.2;         % 20% fault severity
+    
+    % Normal operation before fault
+    if t < fault_start
+        Tm = Tm_healthy;
+        return;
+    end
+    
+    % Time since fault started
+    t_fault = t - fault_start;
+    
+    % Stator fault creates torque ripple at 2×supply frequency
+    f_ripple = 2 * f_supply;  % 100 Hz
+    
+    % Main ripple component (100 Hz)
+    ripple_100Hz = severity * abs(Tm_healthy) * sin(2*pi*f_ripple*t_fault);
+    
+    % Add small 4th harmonic (200 Hz) for realism
+    ripple_200Hz = 0.2 * severity * abs(Tm_healthy) * sin(2*pi*2*f_ripple*t_fault);
+    
+    % Random component to simulate arcing/sparking
+    noise_factor = 0.05 * severity * abs(Tm_healthy) * (2*rand(1) - 1);
+    
+    % Combine all effects
+    total_ripple = ripple_100Hz + ripple_200Hz + noise_factor;
+    
+    % Apply fault
+    Tm = Tm_healthy + total_ripple;
+    
+    % Add slight DC offset
+    Tm = Tm + 0.02 * severity * abs(Tm_healthy);
+end

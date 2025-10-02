@@ -1,0 +1,29 @@
+function Tm = bearingFault(t, Tm_healthy)
+    % Bearing fault parameters - REDUCED FREQUENCY
+    fault_start = 2;        
+    bearing_freq = 10;      % Reduced to 10 Hz for visibility
+    severity = 0.3;         % 30% severity
+    
+    % Normal operation before fault
+    if t < fault_start
+        Tm = Tm_healthy;
+        return;
+    end
+    
+    % Time since fault started
+    t_fault = t - fault_start;
+    
+    % Create periodic impulses - more pronounced
+    fault_period = 1/bearing_freq;
+    phase = mod(t_fault, fault_period);
+    
+    % Create impulse train (20% duty cycle)
+    if phase < 0.2 * fault_period
+        % During impulse
+        impulse_amplitude = severity * abs(Tm_healthy);
+        Tm = Tm_healthy - impulse_amplitude;
+    else
+        % Normal torque
+        Tm = Tm_healthy;
+    end
+end
