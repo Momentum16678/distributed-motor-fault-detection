@@ -1,0 +1,314 @@
+%% Day 5 - Step 3: Distributed Architecture Simulation
+% Author: Ighedosa Osalumenese Favour
+% Supervisor: Engr. N. Shokoya
+% Objective: Simulate distributed fault detection with local processing
+
+clear all; close all; clc;
+
+fprintf('====================================\n');
+fprintf('   DAY 5: ADAPTIVE THRESHOLDING    \n');
+fprintf('   Step 3: Distributed Architecture \n');
+fprintf('====================================\n\n');
+
+%% Simulate Multiple Motor Nodes
+num_motors = 4;
+simulation_time = 10;  % seconds
+Fs = 10000;  % Reduced for efficiency
+t = 0:1/Fs:simulation_time;
+
+% Motor parameters (slightly different for each)
+motor_params = [
+    7.0, 0.1, 10;   % Motor 1: baseline, noise, fault_freq
+    7.5, 0.15, 3;   % Motor 2
+    6.5, 0.12, 100; % Motor 3
+    7.2, 0.08, 50;  % Motor 4
+];
+
+% Fault injection times
+fault_times = [
+    3, 4;    % Motor 1: fault from 3-4s
+    5, 6;    % Motor 2: fault from 5-6s
+    7, 8;    % Motor 3: fault from 7-8s
+    2, 3;    % Motor 4: fault from 2-3s
+];
+
+%% Initialize Distributed Nodes
+nodes = struct();
+
+for motor = 1:num_motors
+    % Generate motor signal
+    baseline = motor_params(motor, 1);
+    noise_level = motor_params(motor, 2);
+    fault_freq = motor_params(motor, 3);
+    
+    signal = baseline + noise_level * randn(size(t));
+    
+    % Add fault
+    fault_mask = t >= fault_times(motor, 1) & t <= fault_times(motor, 2);
+    signal(fault_mask) = signal(fault_mask) + ...
+        0.5 * sin(2*pi*fault_freq*t(fault_mask));
+    
+    % Local processing at each node
+    fprintf('Node %d: Local processing...\n', motor);
+    
+    % Feature extraction (simplified)
+    window_size = round(0.1 * Fs);
+    features = [];
+    feature_times = [];
+    
+    for i = 1:window_size:(length(signal)-window_size)
+        window = signal(i:i+window_size-1);
+        % Simple energy feature
+        features(end+1) = std(window);
+        feature_times(end+1) = t(i + window_size/2);
+    end
+    
+    % Local adaptive thresholding
+    alpha = 0.05;
+    k = 3;
+    mu = features(1);
+    sigma = 0.1;
+    alarms = false(size(features));
+    
+    for i = 1:length(features)
+        [threshold, mu, sigma] = adaptive_threshold_update(features(i), mu, sigma, alpha, k);
+        alarms(i) = features(i) > threshold;
+    end
+    
+    % Store node data
+    nodes(motor).signal = signal;
+    nodes(motor).features = features;
+    nodes(motor).alarms = alarms;
+    nodes(motor).feature_times = feature_times;
+    nodes(motor).fault_freq = fault_freq;
+    
+    % Data reduction: only transmit alarm summary
+    nodes(motor).transmitted_data = struct(...
+        'motor_id', motor, ...
+        'alarm_count', sum(alarms), ...
+        'alarm_times', feature_times(alarms), ...
+        'max_feature', max(features) ...
+    );
+end
+
+%% Central Monitoring Station
+fprintf('\n--- CENTRAL MONITORING STATION ---\n');
+fprintf('Receiving summary data from nodes...\n\n');
+
+% Collect transmitted data
+total_data_original = 0;
+total_data_transmitted = 0;
+
+for motor = 1:num_motors
+    % Original data size (samples)
+    original_size = length(nodes(motor).signal);
+    total_data_original = total_data_original + original_size;
+    
+    % Transmitted data size (alarm summaries)
+    transmitted_size = length(nodes(motor).transmitted_data.alarm_times) + 3; % +3 for other fields
+    total_data_transmitted = total_data_transmitted + transmitted_size;
+    
+    fprintf('Motor %d: %d alarms detected\n', motor, nodes(motor).transmitted_data.alarm_count);
+end
+
+data_reduction = (1 - total_data_transmitted/total_data_original) * 100;
+fprintf('\nData Reduction: %.1f%%\n', data_reduction);
+
+%% Visualization
+figure('Position', [50, 50, 1600, 900], 'Name', 'Distributed Fault Detection Architecture');
+
+% Plot each motor node
+for motor = 1:num_motors
+    subplot(num_motors, 3, (motor-1)*3 + 1);
+    plot(t, nodes(motor).signal, 'b', 'LineWidth', 0.5);
+    title(sprintf('Motor %d Signal (%.0f Hz fault)', motor, nodes(motor).fault_freq));
+    xlabel('Time (s)');
+    ylabel('Signal');
+    grid on;
+    % Mark fault period
+    fault_start = fault_times(motor, 1);
+    fault_end = fault_times(motor, 2);
+    patch([fault_start fault_end fault_end fault_start], ...
+        [min(nodes(motor).signal) min(nodes(motor).signal) ...
+         max(nodes(motor).signal) max(nodes(motor).signal)], ...
+        'r', 'FaceAlpha', 0.2);
+    
+    subplot(num_motors, 3, (motor-1)*3 + 2);
+    plot(nodes(motor).feature_times, nodes(motor).features, 'b', 'LineWidth', 1);
+    hold on;
+    alarm_times = nodes(motor).feature_times(nodes(motor).alarms);
+    alarm_features = nodes(motor).features(nodes(motor).alarms);
+    plot(alarm_times, alarm_features, 'ro', 'MarkerSize', 8, 'MarkerFaceColor', 'r');
+    title('Local Processing');
+    xlabel('Time (s)');
+    ylabel('Feature');
+    grid on;
+    
+    subplot(num_motors, 3, (motor-1)*3 + 3);
+    stem(nodes(motor).transmitted_data.alarm_times, ...
+        ones(size(nodes(motor).transmitted_data.alarm_times)), ...
+        'r', 'LineWidth', 2);
+    title('Transmitted Alarms');
+    xlabel('Time (s)');
+    ylabel('Alarm');
+    ylim([0 1.5]);
+    grid on;
+end
+
+% Add summary panel
+annotation('textbox', [0.02 0.95 0.96 0.04], ...
+    'String', sprintf('Distributed Architecture: %d Motors, %.1f%% Data Reduction', ...
+    num_motors, data_reduction), ...
+    'FontSize', 14, 'FontWeight', 'bold', ...
+    'HorizontalAlignment', 'center', 'EdgeColor', 'k', ...
+    'BackgroundColor', 'w');
+
+%% Save Distributed Architecture Results
+distributed_results = struct();
+distributed_results.num_motors = num_motors;
+distributed_results.data_reduction = data_reduction;
+distributed_results.nodes = nodes;
+
+save('Data/distributed_architecture.mat', 'distributed_results');
+fprintf('\n✓ Distributed architecture simulation complete!\n');
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Absolutely! Let me explain Step 3 code in detail and how it demonstrates distributed architecture:
+
+## Step 3 Code Explanation: Distributed Architecture
+
+### 1. **System Setup (Simulating Multiple Independent Motors)**
+```matlab
+num_motors = 4;
+simulation_time = 10;  % seconds
+Fs = 10000;  % Reduced sampling rate for efficiency
+
+% Each motor has different characteristics
+motor_params = [
+    7.0, 0.1, 10;   % Motor 1: baseline torque, noise level, fault frequency
+    7.5, 0.15, 3;   % Motor 2: different baseline, more noise, low freq fault
+    6.5, 0.12, 100; % Motor 3: lower baseline, medium noise, high freq fault
+    7.2, 0.08, 50;  % Motor 4: different baseline, low noise, medium freq fault
+];
+```
+**This demonstrates**: In a real factory, motors have different sizes, loads, and operating conditions.
+
+### 2. **Different Fault Timing (Real-World Scenario)**
+```matlab
+fault_times = [
+    3, 4;    % Motor 1: fault from 3-4s
+    5, 6;    % Motor 2: fault from 5-6s
+    7, 8;    % Motor 3: fault from 7-8s
+    2, 3;    % Motor 4: fault from 2-3s
+];
+```
+**This demonstrates**: Faults don't happen simultaneously - they occur at different times across the plant.
+
+### 3. **Local Processing at Each Node**
+```matlab
+for motor = 1:num_motors
+    % Each motor has its OWN local processor doing:
+    
+    % 1. Feature extraction locally
+    for i = 1:window_size:(length(signal)-window_size)
+        window = signal(i:i+window_size-1);
+        features(end+1) = std(window);  % Simple feature
+    end
+    
+    % 2. Adaptive thresholding locally
+    for i = 1:length(features)
+        [threshold, mu, sigma] = adaptive_threshold_update(...);
+        alarms(i) = features(i) > threshold;
+    end
+```
+**This demonstrates**: Each motor has its own "edge device" that:
+- Processes data independently
+- Doesn't need to wait for central server
+- Makes decisions locally
+
+### 4. **Data Reduction - The Key Benefit**
+```matlab
+% Instead of sending ALL this:
+nodes(motor).signal = signal;  % 100,000 data points!
+
+% Each node only sends THIS:
+nodes(motor).transmitted_data = struct(...
+    'motor_id', motor,              % 1 number
+    'alarm_count', sum(alarms),     % 1 number
+    'alarm_times', feature_times(alarms), % ~5 timestamps
+    'max_feature', max(features)    % 1 number
+);
+```
+**This demonstrates**: 
+- **Traditional**: Send 100,000 raw samples to central server
+- **Distributed**: Send only ~10 values (alarm summary)
+- **Reduction**: 99.99%!
+
+### 5. **Central Monitoring Station**
+```matlab
+% Central station only receives summaries
+for motor = 1:num_motors
+    fprintf('Motor %d: %d alarms detected\n', motor, ...
+        nodes(motor).transmitted_data.alarm_count);
+end
+```
+**This demonstrates**: Central control room still has visibility but doesn't process raw data.
+
+## Visual Representation of Distributed vs Centralized:
+
+### Traditional Centralized:
+```
+Motor 1 ──[100k samples/s]──┐
+Motor 2 ──[100k samples/s]──├──> Central Server (processes everything)
+Motor 3 ──[100k samples/s]──│
+Motor 4 ──[100k samples/s]──┘
+```
+**Problems**: Network overload, single point of failure, processing delays
+
+### Distributed Architecture (Your Implementation):
+```
+Motor 1 + Edge ──[~10 values]──┐
+Motor 2 + Edge ──[~10 values]──├──> Central Monitor (just displays)
+Motor 3 + Edge ──[~10 values]──│
+Motor 4 + Edge ──[~10 values]──┘
+```
+**Benefits**: Minimal network traffic, fault-tolerant, real-time response
+
+## Real-World Analogy:
+
+**Centralized**: Like having one doctor examine every patient in a hospital
+- Doctor gets overwhelmed
+- Patients wait in long queues
+- If doctor is sick, whole hospital stops
+
+**Distributed**: Like having a nurse at each ward who can handle basic issues
+- Nurses handle routine checks locally
+- Only escalate serious cases to doctor
+- If one nurse is unavailable, others continue working
+
+## Key Distributed Architecture Principles Demonstrated:
+
+1. **Autonomy**: Each node operates independently
+2. **Local Intelligence**: Processing happens at the source
+3. **Minimal Communication**: Only essential data transmitted
+4. **Scalability**: Add more motors without overwhelming the system
+5. **Fault Tolerance**: One node failure doesn't affect others
+6. **Real-time Response**: No waiting for central processing
+
+Your implementation perfectly shows why distributed architectures are essential for modern industrial systems!
